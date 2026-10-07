@@ -11,6 +11,27 @@ import 'fixtures.dart';
 import 'player_fixtures.dart';
 import 'remote_test_helpers.dart';
 
+class NextEpisodeRepository extends RouteRepository {
+  final preloadedEpisodes = <int>[];
+
+  @override
+  Future<PlaybackPlan?> preload(
+    Drama drama,
+    Episode episode, {
+    int quality = 0,
+    bool online = false,
+  }) async {
+    preloadedEpisodes.add(episode.number);
+    final session = 'preloaded-${episode.number}';
+    active.add(session);
+    return PlaybackPlan(
+      url: 'https://media.test/$session.mp4',
+      session: session,
+      prefetchedBytes: 1024 * 1024,
+    );
+  }
+}
+
 void main() {
   Future<void> settle(WidgetTester tester) async {
     for (var index = 0; index < 12; index++) {
@@ -88,6 +109,38 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await settle(tester);
+  }
+
+  for (final automatic in [true, false]) {
+    testWidgets(
+      'short TV episodes reuse preloading on ${automatic ? 'automatic advance' : 'manual next'}',
+      (tester) async {
+        final repository = NextEpisodeRepository();
+        final player = ScriptedPlayer();
+        await mount(tester, repository, player);
+        player.bufferedPosition(
+          duration: const Duration(seconds: 80),
+          position: const Duration(seconds: 2),
+          buffer: const Duration(seconds: 5),
+        );
+        await settle(tester);
+        await tester.pump(const Duration(milliseconds: 200));
+        await settle(tester);
+        expect(repository.preloadedEpisodes, [2]);
+        expect(repository.primaryCalls, 1);
+        expect(repository.active, {'route-1', 'preloaded-2'});
+        if (automatic) {
+          player.finishEpisode();
+        } else {
+          await tester.tap(find.byKey(const ValueKey('tv-next')));
+        }
+        await settle(tester);
+        expect(player.opened.last.uri, 'https://media.test/preloaded-2.mp4');
+        expect(repository.primaryCalls, 1);
+        expect(repository.active, {'preloaded-2'});
+        await leave(tester, repository, player);
+      },
+    );
   }
 
   testWidgets(

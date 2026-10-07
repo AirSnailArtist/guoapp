@@ -3,7 +3,33 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'core_bridge.dart';
+import 'diary_service.dart';
 import 'models.dart';
+
+enum PlaybackPreloadAction { wait, prepare, pause }
+
+PlaybackPreloadAction playbackPreloadAction({
+  required Duration duration,
+  required Duration position,
+  required Duration buffer,
+}) {
+  final length = duration.inMilliseconds;
+  final elapsed = position.inMilliseconds;
+  final remaining = length - elapsed;
+  if (length <= 0 || remaining <= 0) return PlaybackPreloadAction.pause;
+  final headroom = buffer.inMilliseconds - elapsed;
+  final pauseThreshold = remaining < 1500 ? remaining : 1500;
+  if (headroom < pauseThreshold) return PlaybackPreloadAction.pause;
+  final start = length < 8000 ? (length ~/ 4).clamp(500, 2000) : 2000;
+  if (elapsed < start ||
+      (length > 120000 && elapsed < length ~/ 2 && remaining > 45000)) {
+    return PlaybackPreloadAction.wait;
+  }
+  final requiredBuffer = remaining < 3000 ? remaining : 3000;
+  return headroom >= requiredBuffer
+      ? PlaybackPreloadAction.prepare
+      : PlaybackPreloadAction.wait;
+}
 
 class PlaybackPreloader extends ChangeNotifier {
   PlaybackPreloader(this.repository, {DateTime Function()? now})
@@ -31,7 +57,7 @@ class PlaybackPreloader extends ChangeNotifier {
           : '下一集播放地址已准备';
     }
     if (loading || _delay != null) return '正在准备下一集';
-    return error.isNotEmpty ? '下一集预加载暂不可用，切集时会重新获取' : '播放后段提前准备下一集';
+    return error.isNotEmpty ? '下一集预加载暂不可用，切集时会重新获取' : '播放稳定后提前准备下一集';
   }
 
   String _key(Drama drama, Episode episode, int quality, bool online) =>
@@ -61,10 +87,11 @@ class PlaybackPreloader extends ChangeNotifier {
       return;
     }
     final ticket = _generation;
-    _delay = Timer(const Duration(milliseconds: 600), () async {
+    _delay = Timer(const Duration(milliseconds: 200), () async {
       _delay = null;
       loading = true;
       notifyListeners();
+      final elapsed = Stopwatch()..start();
       try {
         final plan = await repository.preload(
           drama,
@@ -76,7 +103,10 @@ class PlaybackPreloader extends ChangeNotifier {
           if (plan != null) await repository.release(plan.session);
           return;
         }
-        if (plan == null || plan.url.isEmpty) throw AppFailure('未取得预加载结果');
+        if (plan == null || plan.url.isEmpty) {
+          if (plan != null) _release(plan);
+          throw AppFailure('未取得预加载结果');
+        }
         var expires = _now().add(const Duration(minutes: 2));
         if (plan.expiresAt > 0) {
           final authorizationExpiry = DateTime.fromMillisecondsSinceEpoch(
@@ -93,6 +123,9 @@ class PlaybackPreloader extends ChangeNotifier {
         _ready = plan;
         _expires = expires;
         error = '';
+        DiaryService.add(
+          '[Preload] ready episode=${episode.number} bytes=${plan.prefetchedBytes} elapsedMs=${elapsed.elapsedMilliseconds}',
+        );
       } catch (failure) {
         if (_closed || ticket != _generation) return;
         error = failure.toString();
@@ -118,7 +151,12 @@ class PlaybackPreloader extends ChangeNotifier {
             _now().isBefore(_expires)
         ? _ready
         : null;
-    if (result != null) _ready = null;
+    if (result != null) {
+      _ready = null;
+      DiaryService.add(
+        '[Preload] reuse episode=${episode.number} bytes=${result.prefetchedBytes}',
+      );
+    }
     clear();
     return result;
   }

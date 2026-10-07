@@ -84,6 +84,20 @@ class ScriptedPlayer extends PlatformPlayer {
     playingController.add(false);
   }
 
+  void bufferedPosition({
+    required Duration duration,
+    required Duration position,
+    required Duration buffer,
+  }) {
+    state = state.copyWith(
+      duration: duration,
+      position: position,
+      buffer: buffer,
+    );
+    positionController.add(position);
+    bufferController.add(buffer);
+  }
+
   void videoSize(int width, int height) {
     videoParamsController.add(
       VideoParams(w: width, h: height, dw: width, dh: height),
