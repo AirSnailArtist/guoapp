@@ -17,6 +17,12 @@ import 'lan_sync_models.dart';
 part 'local_store_sync.dart';
 part 'local_store_updates.dart';
 
+typedef LocalLibraryState = ({
+  Map<String, Drama> favorites,
+  Map<String, FollowState> states,
+  Map<String, WatchEntry> history,
+});
+
 class LocalStore extends ChangeNotifier {
   /// [pinHasher] 可注入，便于测试替换掉默认的 isolate 哈希实现。
   LocalStore(
@@ -490,6 +496,7 @@ class LocalStore extends ChangeNotifier {
     bool trackSync = true,
     bool syncUrgent = true,
     Set<String> clearSyncProgress = const {},
+    LocalLibraryState? library,
   }) async {
     final snapshot = _snapshot;
     if (snapshot == null) throw StateError('请先恢复本地配置');
@@ -514,6 +521,7 @@ class LocalStore extends ChangeNotifier {
         values,
         keys: {...changes.keys, ...remove},
         clearProgress: clearSyncProgress,
+        library: library,
       );
     }
     values.putIfAbsent(
@@ -703,6 +711,9 @@ class LocalStore extends ChangeNotifier {
       final entries = Map.of(_history)..[entry.drama.id] = current;
       final sorted = entries.values.toList()
         ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      final retained = {
+        for (final watch in sorted.take(300)) watch.drama.id: watch,
+      };
       final following = _followStates[entry.drama.id];
       final states = Map.of(_followStates);
       final favorites = Map.of(_favorites);
@@ -729,19 +740,37 @@ class LocalStore extends ChangeNotifier {
       for (final key in updateStates.keys.toList()) {
         updateStates[key] = updateStates[key]!.acknowledge(watch: current);
       }
-      await _commit({
-        _key('followUpdatesV1'): _encodeFollowSeries(updateStates),
-        _key('history'): jsonEncode(
-          sorted.take(300).map((entry) => entry.toJson()).toList(),
-        ),
-        _key('followStates'): _encodeFollowStates(states),
-        if (following != null) ...{
-          _key('favorites'): jsonEncode(
-            favorites.values.map((entry) => entry.toJson()).toList(),
+      await _commit(
+        {
+          _key('followUpdatesV1'): _encodeFollowSeries(updateStates),
+          _key('history'): jsonEncode(
+            sorted.take(300).map((entry) => entry.toJson()).toList(),
           ),
+          _key('followStates'): _encodeFollowStates(states),
+          if (following != null) ...{
+            _key('favorites'): jsonEncode(
+              favorites.values.map((entry) => entry.toJson()).toList(),
+            ),
+          },
         },
-      }, syncUrgent: false);
-      _loadLibrary();
+        syncUrgent: false,
+        library: (favorites: favorites, states: states, history: retained),
+      );
+      if (epoch != _epoch || locked) return;
+      _history
+        ..clear()
+        ..addAll(retained);
+      _favorites
+        ..clear()
+        ..addAll(favorites);
+      _followStates
+        ..clear()
+        ..addAll(states);
+      _followSeries
+        ..clear()
+        ..addAll(updateStates);
+      _lanDocumentCache = null;
+      if (following != null) _followSubscriptionCache = null;
       _notify();
     });
   }

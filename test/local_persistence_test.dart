@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:duanju_app/local_profiles.dart';
@@ -77,6 +78,15 @@ void main() {
         );
         for (final change in <Future<void> Function()>[
           () => store.toggleFavorite(next),
+          () => store.saveWatch(
+            WatchEntry(
+              drama: drama,
+              episode: 2,
+              position: 25,
+              duration: 100,
+              updatedAt: DateTime.now(),
+            ),
+          ),
           () => store.clearHistory(),
           () => store.setThemeMode('light'),
           () => store.setPlaybackPreferences(
@@ -108,6 +118,56 @@ void main() {
       },
     );
   }
+
+  test(
+    'large snapshot encoding keeps the event loop available and persists intact',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      final snapshot = LocalSnapshot(preferences);
+      final payload = jsonEncode(List.filled(180000, 'synthetic-series-entry'));
+      var eventLoopRan = false;
+      final timer = Timer(Duration.zero, () => eventLoopRan = true);
+      await snapshot.commit({'profiles': '[]', 'seriesCandidates': payload});
+      timer.cancel();
+      expect(eventLoopRan, isTrue);
+      expect(LocalSnapshot(preferences).getString('seriesCandidates'), payload);
+    },
+  );
+
+  test(
+    'progress commits retain unrelated catalog objects and synchronize the saved watch',
+    () async {
+      final (store, platform) = await create();
+      await store.toggleFavorite(drama);
+      const candidate = Drama(
+        id: 'hongguo:catalog-only',
+        source: 'hongguo',
+        title: '合成目录保留',
+      );
+      await store.refreshDramas([candidate]);
+      final before = store
+          .seriesDramasFor(drama)
+          .firstWhere((d) => d.id == candidate.id);
+      await store.saveWatch(
+        WatchEntry(
+          drama: drama,
+          episode: 2,
+          position: 25,
+          duration: 100,
+          updatedAt: DateTime.now(),
+        ),
+      );
+      final after = store
+          .seriesDramasFor(drama)
+          .firstWhere((d) => d.id == candidate.id);
+      expect(identical(before, after), isTrue);
+      expect(store.lanDocument.records[drama.id]?.watch?.position, 25);
+      final restored = await restart(platform);
+      expect(restored.watched(drama.id)?.position, 25);
+      expect(restored.lanDocument.records[drama.id]?.watch?.position, 25);
+    },
+  );
 
   test(
     'backup restoration is one snapshot and never mixes old and new data',

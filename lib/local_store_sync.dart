@@ -21,8 +21,9 @@ extension LocalStoreSync on LocalStore {
     final records = <String, LanRecord>{};
     for (final row in raw) {
       final record = LanRecord.fromJson(row);
-      if (records.containsKey(record.id))
+      if (records.containsKey(record.id)) {
         throw const FormatException('备份同步记录重复');
+      }
       records[record.id] = record;
     }
     final favorites = (library['favorites'] as List)
@@ -84,6 +85,7 @@ extension LocalStoreSync on LocalStore {
     Map<String, Object> values, {
     required Set<String> keys,
     Set<String> clearProgress = const {},
+    LocalLibraryState? library,
   }) {
     if (locked ||
         !keys.any(
@@ -95,24 +97,26 @@ extension LocalStoreSync on LocalStore {
       return;
     }
     final document = lanDocument;
-    final favorites = <String, Drama>{};
-    final history = <String, WatchEntry>{};
-    final states = <String, FollowState>{};
-    for (final row in readJsonList(values[_key('favorites')] as String?)) {
-      final drama = Drama.fromJson(row);
-      favorites[drama.id] = drama;
-    }
-    for (final row in readJsonList(values[_key('history')] as String?)) {
-      final watch = WatchEntry.fromJson(row);
-      history[watch.drama.id] = watch;
-    }
-    final rawStates = lanMap(
-      jsonDecode(values[_key('followStates')] as String? ?? '{}'),
-    );
-    for (final drama in favorites.values) {
-      states[drama.id] = rawStates[drama.id] == null
-          ? FollowState.initial(drama, history[drama.id])
-          : FollowState.fromJson(lanMap(rawStates[drama.id]));
+    final favorites = library?.favorites ?? <String, Drama>{};
+    final history = library?.history ?? <String, WatchEntry>{};
+    final states = library?.states ?? <String, FollowState>{};
+    if (library == null) {
+      for (final row in readJsonList(values[_key('favorites')] as String?)) {
+        final drama = Drama.fromJson(row);
+        favorites[drama.id] = drama;
+      }
+      for (final row in readJsonList(values[_key('history')] as String?)) {
+        final watch = WatchEntry.fromJson(row);
+        history[watch.drama.id] = watch;
+      }
+      final rawStates = lanMap(
+        jsonDecode(values[_key('followStates')] as String? ?? '{}'),
+      );
+      for (final drama in favorites.values) {
+        states[drama.id] = rawStates[drama.id] == null
+            ? FollowState.initial(drama, history[drama.id])
+            : FollowState.fromJson(lanMap(rawStates[drama.id]));
+      }
     }
     document.reconcile(
       previous: _favorites,
