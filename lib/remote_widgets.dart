@@ -369,13 +369,25 @@ class _RemoteGridState extends State<RemoteGrid> {
               crossAxisSpacing: widget.spacing,
               mainAxisSpacing: widget.spacing,
             ),
-            delegate: SliverChildBuilderDelegate(
-              (context, index) =>
-                  widget.itemBuilder(context, index, _node(index), () {
-                    _focused = widget.itemKeys[index];
-                  }),
-              childCount: widget.itemKeys.length,
-            ),
+            delegate: SliverChildBuilderDelegate((context, index) {
+              final node = _node(index);
+              final key = widget.itemKeys[index];
+              if (_target == key) {
+                final generation = _generation;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted &&
+                      generation == _generation &&
+                      _target == key &&
+                      node.context != null) {
+                    node.requestFocus();
+                    _target = null;
+                  }
+                });
+              }
+              return widget.itemBuilder(context, index, node, () {
+                _focused = key;
+              });
+            }, childCount: widget.itemKeys.length),
           ),
         ),
         if (widget.footer != null) SliverToBoxAdapter(child: widget.footer),

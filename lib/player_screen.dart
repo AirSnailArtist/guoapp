@@ -107,6 +107,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _fullscreen = false;
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
+  bool _panelBackGuard = false;
+  Timer? _panelBackGuardTimer;
   int _mobileTab = 0;
   bool _autoAdvance = true;
   bool? _systemFullscreen;
@@ -182,15 +184,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     widget.store.addListener(_accessChanged);
     _player =
         widget.playerFactory?.call() ??
-        (Platform.isAndroid
-            ? LunaExoPlayer()
-            : Player(
-                configuration: const PlayerConfiguration(
-                  bufferSize: 32 * 1024 * 1024,
-                  logLevel: MPVLogLevel.error,
-                ),
-              ));
-    _video = widget.videoBuilder == null && !Platform.isAndroid
+        Player(
+          configuration: const PlayerConfiguration(
+            bufferSize: 32 * 1024 * 1024,
+            logLevel: MPVLogLevel.error,
+          ),
+        );
+    _video = widget.videoBuilder == null
         ? VideoController(
             _player,
             configuration: VideoControllerConfiguration(
@@ -1014,8 +1014,14 @@ class _PlayerScreenState extends State<PlayerScreen>
               await platform.setProperty('vd-lavc-skiploopfilter', 'all');
               await platform.setProperty('vd-lavc-skipidct', 'all');
               await platform.setProperty('vd-lavc-threads', '2');
-              await platform.setProperty('demuxer-max-bytes', '${4 * 1024 * 1024}');
-              await platform.setProperty('demuxer-max-back-bytes', '${1 * 1024 * 1024}');
+              await platform.setProperty(
+                'demuxer-max-bytes',
+                '${4 * 1024 * 1024}',
+              );
+              await platform.setProperty(
+                'demuxer-max-back-bytes',
+                '${1 * 1024 * 1024}',
+              );
               await platform.setProperty('demuxer-readahead-secs', '5');
             } else {
               await platform.setProperty('hwdec', 'auto-safe');
@@ -1045,7 +1051,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         _plan = plan;
         installed = true;
         _acceptErrors = true;
-        DiaryService.add('[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}');
+        DiaryService.add(
+          '[Play] 调用 _player.open: url=${plan.url}, headers=${plan.headers.keys.toList()}',
+        );
         await _player.open(
           Media(
             plan.url,
@@ -1379,6 +1387,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       );
     } finally {
+      _guardPanelBack();
       if (mounted && !_closed) setState(() => _panelOpen = false);
     }
     if (index != null && mounted && !_closed && index != _index) {
@@ -1420,6 +1429,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       );
     } finally {
+      _guardPanelBack();
       if (mounted && !_closed) setState(() => _panelOpen = false);
     }
     if (selection == null || !mounted || _closed) return;
@@ -1439,17 +1449,35 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  void _guardPanelBack() {
+    _panelBackGuard = true;
+    _panelBackGuardTimer?.cancel();
+    _panelBackGuardTimer = Timer(const Duration(milliseconds: 500), () {
+      _panelBackGuard = false;
+    });
+  }
+
   void _back() {
+    if (_panelBackGuard) return;
+    if (_panelOpen) {
+      _guardPanelBack();
+      if (!(ModalRoute.of(context)?.isCurrent ?? true)) {
+        Navigator.of(context).pop();
+      }
+      return;
+    }
+    if (!(ModalRoute.of(context)?.isCurrent ?? true)) return;
     if (_showFullscreen && !_television) {
       _rotate();
     } else {
-      Navigator.of(context).maybePop();
+      Navigator.of(context).pop();
     }
   }
 
   @override
   void dispose() {
     _closed = true;
+    _panelBackGuardTimer?.cancel();
     final enhancementClosed = _enhancement.close();
     LanController.current?.detachPlayback(_lanIdentity);
     widget.handoff?.fail('接收端已退出播放');
@@ -1525,11 +1553,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     final fullscreen = _showFullscreen;
     final pictureInPicture = _pictureInPictureVisible;
     return PopScope(
-      canPop: _television || !fullscreen,
+      canPop: !_television && !fullscreen,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && fullscreen && !_television) {
-          _rotate();
-        }
+        if (!didPop) _back();
       },
       child: CallbackShortcuts(
         bindings: {
@@ -1737,8 +1763,14 @@ class _PlayerScreenState extends State<PlayerScreen>
                 Video(
                   controller: _video!,
                   fit: BoxFit.contain,
-                  controls: (_) => layeredControls,
+                  controls: _television
+                      ? NoVideoControls
+                      : (_) => layeredControls,
                 ),
+              if (_television &&
+                  widget.videoBuilder == null &&
+                  _player is! LunaExoPlayer)
+                layeredControls,
               if (_loading && !hideOverlayForPictureInPicture)
                 ColoredBox(
                   color: Colors.black.withValues(alpha: .78),
@@ -1768,7 +1800,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         FilledButton.tonalIcon(
-                          onPressed: () => DiaryService.showDiaryDialog(context),
+                          onPressed: () =>
+                              DiaryService.showDiaryDialog(context),
                           icon: const Icon(Icons.receipt_long_rounded),
                           label: const Text('查看播放日记'),
                         ),
@@ -1779,8 +1812,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                             label: const Text('改为在线播放'),
                           )
                         else if (!_localFailure &&
-                              !widget.localOnly &&
-                              widget.repository.supportsSourceManagement)
+                            !widget.localOnly &&
+                            widget.repository.supportsSourceManagement)
                           SourceDiagnosticsButton(
                             repository: widget.repository,
                             store: widget.store,

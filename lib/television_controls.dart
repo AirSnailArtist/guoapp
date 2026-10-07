@@ -310,6 +310,7 @@ class _TelevisionControlsState extends State<TelevisionControls> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
+                            color: Colors.white,
                             fontSize: 22,
                             fontWeight: FontWeight.w600,
                           ),

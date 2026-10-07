@@ -123,6 +123,30 @@ void main() {
     },
   );
 
+  testWidgets('TV panel back does not also exit playback', (tester) async {
+    final repository = RouteRepository();
+    final player = ScriptedPlayer();
+    await mount(tester, repository, player);
+    for (final panel in ['tv-episodes', 'tv-settings']) {
+      await tester.tap(find.byKey(ValueKey(panel)));
+      await settle(tester);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await tester.sendKeyEvent(
+        LogicalKeyboardKey.goBack,
+        physicalKey: PhysicalKeyboardKey.escape,
+      );
+      await settle(tester);
+      await tester.binding.handlePopRoute();
+      await settle(tester);
+      expect(find.byType(PlayerScreen), findsOneWidget);
+      expect(player.disposed, isFalse);
+      await tester.pump(const Duration(milliseconds: 600));
+      await settle(tester);
+      expect(find.byType(AlertDialog), findsNothing);
+    }
+    await leave(tester, repository, player);
+  });
+
   testWidgets(
     'TV selection restores the current episode and panels keep focus during playback',
     (tester) async {
@@ -149,6 +173,7 @@ void main() {
       );
       expect(repository.active.length, 1);
       await press(tester, LogicalKeyboardKey.arrowRight);
+      await press(tester, LogicalKeyboardKey.arrowRight);
       await press(tester, LogicalKeyboardKey.select);
       expect(find.text('倍速'), findsOneWidget);
       await press(tester, LogicalKeyboardKey.arrowRight);
@@ -174,6 +199,8 @@ void main() {
         FocusManager.instance.primaryFocus?.debugLabel,
         'tv-player-settings',
       );
+      await tester.pump(const Duration(milliseconds: 600));
+      await settle(tester);
       await leave(tester, repository, player);
     },
   );
