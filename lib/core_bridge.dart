@@ -67,6 +67,9 @@ class AppFailure implements Exception {
 }
 
 abstract class AppRepository {
+  AppRepository followRepository() => this;
+  Future<DramaDetail> followDetail(Drama drama) => detail(drama);
+  Future<void> cancelFollowChecks() => cancelCatalog();
   Future<Map<String, dynamic>> lan(
     String command,
     Map<String, dynamic> payload,
@@ -190,6 +193,18 @@ class NativeRepository extends AppRepository {
   static final _coverDecoder = CoverDecoder();
   NativeRepository({this.background = false});
   final bool background;
+  @override
+  AppRepository followRepository() =>
+      NativeRepository(background: true)..access = access;
+  @override
+  Future<DramaDetail> followDetail(Drama drama) async => DramaDetail.fromJson(
+    await _read('follow-detail', {'action': 'detail', 'drama': drama.toJson()}),
+  );
+  @override
+  Future<void> cancelFollowChecks() async {
+    await Future.wait([cancelCatalog(), _cancelReads('follow-detail')]);
+  }
+
   LocalStore? access;
   final _readOwner = DateTime.now().microsecondsSinceEpoch.toString();
   int _readSequence = 0;

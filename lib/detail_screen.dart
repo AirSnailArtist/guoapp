@@ -293,15 +293,6 @@ class _DetailScreenState extends State<DetailScreen> {
         drama.id == (_detail?.drama.id ?? widget.drama.id)) {
       return;
     }
-    final anchor = _detail?.drama ?? widget.drama;
-    if (widget.store.following(anchor.id)?.seriesSeasons[drama.id]?.read ==
-        false) {
-      await saveUserChange(
-        context,
-        () => widget.store.markSeriesSeasonRead(anchor.id, drama.id),
-      );
-      if (!mounted) return;
-    }
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (_) => DetailScreen(

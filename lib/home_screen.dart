@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 
 import 'app_layout.dart';
 import 'app_bottom_navigation.dart';
-import 'app_build.dart';
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
 import 'catalog_browser.dart';
@@ -33,6 +32,8 @@ import 'batch_downloads.dart';
 import 'drama_actions.dart';
 import 'library_updater.dart';
 import 'saved_library.dart';
+import 'follow_update_checker.dart';
+import 'follow_updates_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.repository, required this.store});
@@ -42,7 +43,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   static const _recommendationCategory = 'app:recommendations';
   final _search = TextEditingController();
   final _scroll = ScrollController();
@@ -64,6 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _categoriesError;
   int _categoryGeneration = 0;
   late final LibraryUpdater _updater;
+  late final FollowUpdateChecker _followChecker;
   final _changedSources = <String>{};
   final _selectedDramas = <String, Drama>{};
   Timer? _cacheRefreshTimer;
@@ -434,6 +436,18 @@ class _HomeScreenState extends State<HomeScreen> {
       onCatalogChanged: _catalogUpdated,
     )..addListener(_updateChanged);
     _updater.startWatching();
+    WidgetsBinding.instance.addObserver(this);
+    _followChecker = FollowUpdateChecker(
+      widget.repository,
+      widget.store,
+      foregroundBusy: () =>
+          !mounted ||
+          _loading ||
+          _loadingMore ||
+          _searchVisible ||
+          ModalRoute.of(context)?.isCurrent != true,
+    )..addListener(_updateChanged);
+    _followChecker.start();
     widget.store.addListener(_sourcesChanged);
     widget.repository.catalogUpdates.addListener(_metadataChanged);
     if (widget.store.sources.isNotEmpty) {
@@ -445,7 +459,30 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _followChecker.setPaused(state != AppLifecycleState.resumed);
+  }
+
+  void _openFollowUpdates([String? key]) {
+    _pauseCatalog();
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FollowUpdatesScreen(
+          repository: widget.repository,
+          store: widget.store,
+          checker: _followChecker,
+          seriesKey: key,
+        ),
+      ),
+    );
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _followChecker.removeListener(_updateChanged);
+    _followChecker.dispose();
     _updater.removeListener(_updateChanged);
     _updater.dispose();
     _cacheRefreshTimer?.cancel();
@@ -539,6 +576,7 @@ class _HomeScreenState extends State<HomeScreen> {
       unawaited(
         saveUserChange(context, () => widget.store.refreshDramas(result.items)),
       );
+      if (!_loading) unawaited(_followChecker.checkNow());
     }
 
     try {
@@ -776,6 +814,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _pauseCatalog() {
+    unawaited(_followChecker.cancel());
     _debounce?.cancel();
     _generation++;
     unawaited(_browser.cancel());
@@ -1036,7 +1075,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           for (final entry in [
                             (Icons.explore_rounded, '发现'),
-                            (Icons.bookmark_rounded, '追剧'),
+                            (
+                              Icons.bookmark_rounded,
+                              widget.store.followUpdateCount > 0
+                                  ? '追剧 · ${widget.store.followUpdateCount}'
+                                  : '追剧',
+                            ),
                             (Icons.history_rounded, '最近观看'),
                             if (widget.store.canDownload)
                               (Icons.download_rounded, '下载'),
@@ -1072,7 +1116,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       NavigationRailDestination(
                         icon: Icon(Icons.bookmark_border_rounded),
                         selectedIcon: Icon(Icons.bookmark_rounded),
-                        label: Text('追剧'),
+                        label: Text(
+                          widget.store.followUpdateCount > 0
+                              ? '追剧 · ${widget.store.followUpdateCount}'
+                              : '追剧',
+                        ),
                       ),
                       NavigationRailDestination(
                         icon: Icon(Icons.history_rounded),
@@ -1107,6 +1155,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           repository: widget.repository,
                           store: widget.store,
                           history: _tab == 2,
+                          onOpenUpdates: _openFollowUpdates,
                           onOpen: _openDrama,
                           onContinue: (drama) =>
                               _openDrama(drama, resume: true),
@@ -1136,7 +1185,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     NavigationDestination(
                       icon: Icon(Icons.bookmark_border_rounded),
                       selectedIcon: Icon(Icons.bookmark_rounded),
-                      label: '追剧',
+                      label: widget.store.followUpdateCount > 0
+                          ? '追剧 · ${widget.store.followUpdateCount}'
+                          : '追剧',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.history_rounded),
@@ -1178,6 +1229,21 @@ class _HomeScreenState extends State<HomeScreen> {
     final television = AppLayout.isTelevision(context);
     return Column(
       children: [
+        if (widget.store.followSubscriptions.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: RemoteButton(
+                key: const ValueKey('home-follow-updates'),
+                label: widget.store.followUpdateCount > 0
+                    ? '追剧更新 · ${widget.store.followUpdateCount} 个系列'
+                    : '追剧更新 · 暂无未读更新',
+                icon: Icons.notifications_active_outlined,
+                onPressed: _openFollowUpdates,
+              ),
+            ),
+          ),
         if (_searchVisible && !television)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),

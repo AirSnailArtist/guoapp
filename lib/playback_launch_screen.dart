@@ -14,6 +14,7 @@ Future<void> openPlaybackDirectly(
   required Drama drama,
   required AppRepository repository,
   required LocalStore store,
+  int? initialEpisode,
 }) async {
   final profileEpoch = store.profileEpoch;
   try {
@@ -34,7 +35,14 @@ Future<void> openPlaybackDirectly(
       throw AppFailure('暂时没有可播放的集数');
     }
     final watched = store.watched(mergedDrama.id);
-    final index = resumeEpisodeIndex(merged.episodes, watched);
+    final requestedIndex = initialEpisode == null
+        ? -1
+        : merged.episodes.indexWhere(
+            (episode) => episode.number == initialEpisode,
+          );
+    final index = requestedIndex >= 0
+        ? requestedIndex
+        : resumeEpisodeIndex(merged.episodes, watched);
     final episode = merged.episodes[index];
     if (episode.vip && mergedDrama.source != SourceSite.dsd.id) {
       final accepted = await showDialog<bool>(

@@ -181,7 +181,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('follow-filter-updates')));
     await tester.pumpAndSettle();
     expect(find.byKey(ValueKey('saved-${seasonOne.id}')), findsOneWidget);
-    expect(find.textContaining('新季 1 部'), findsWidgets);
+    expect(find.textContaining('后续季可看'), findsWidgets);
     await tester.pumpWidget(
       MaterialApp(
         home: DetailScreen(
@@ -199,7 +199,8 @@ void main() {
     await tester.ensureVisible(seasonTwoChip);
     await tester.tap(seasonTwoChip);
     await tester.pumpAndSettle();
-    expect(store.following(seasonOne.id)!.newSeasons, 0);
+    expect(store.following(seasonOne.id)!.newSeasons, 1);
+    expect(store.followUpdateCount, 1);
     expect(find.text('合成系列 第二季'), findsWidgets);
     expect(repository.detailRequests, contains(seasonTwo.id));
     expect(tester.takeException(), isNull);

@@ -263,12 +263,14 @@ class CatalogPage {
     this.warning = '',
     this.page = 1,
     this.fresh = false,
+    this.localSearch = false,
   });
   final List<Drama> items;
   final bool hasMore;
   final String warning;
   final int page;
   final bool fresh;
+  final bool localSearch;
   factory CatalogPage.fromJson(Map<String, dynamic> json) => CatalogPage(
     [
       for (final row in json['items'] as List? ?? const [])
@@ -278,6 +280,7 @@ class CatalogPage {
     warning: json['warning'] as String? ?? '',
     page: intValue(json['page']) > 0 ? intValue(json['page']) : 1,
     fresh: json['fresh'] == true,
+    localSearch: json['localSearch'] == true,
   );
 }
 

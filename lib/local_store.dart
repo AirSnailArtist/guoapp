@@ -10,10 +10,12 @@ import 'playback_preferences.dart';
 import 'download_preferences.dart';
 import 'catalog_sort.dart';
 import 'follow_state.dart';
+import 'follow_updates.dart';
 import 'hongguo_series.dart';
 import 'lan_sync_models.dart';
 
 part 'local_store_sync.dart';
+part 'local_store_updates.dart';
 
 class LocalStore extends ChangeNotifier {
   /// [pinHasher] 可注入，便于测试替换掉默认的 isolate 哈希实现。
@@ -35,6 +37,8 @@ class LocalStore extends ChangeNotifier {
   final Map<String, WatchEntry> _history = {};
   final Map<String, Drama> _favorites = {};
   final Map<String, FollowState> _followStates = {};
+  final Map<String, FollowSeriesState> _followSeries = {};
+  List<FollowSubscription>? _followSubscriptionCache;
   final Map<String, Drama> _seriesCandidates = {};
   Future<void> _writes = Future<void>.value();
   List<LocalProfile> _profiles = [];
@@ -107,6 +111,8 @@ class LocalStore extends ChangeNotifier {
     _history.clear();
     _favorites.clear();
     _followStates.clear();
+    _followSeries.clear();
+    _followSubscriptionCache = null;
     _seriesCandidates.clear();
     _epoch++;
   }
@@ -252,6 +258,8 @@ class LocalStore extends ChangeNotifier {
     _history.clear();
     _favorites.clear();
     _followStates.clear();
+    _followSeries.clear();
+    _followSubscriptionCache = null;
     _seriesCandidates.clear();
     if (_configurationError != null) return;
     for (final row in readJsonList(_string(_key('history')))) {
@@ -284,6 +292,17 @@ class LocalStore extends ChangeNotifier {
         );
       }
     }
+    try {
+      final groups =
+          jsonDecode(_string(_key('followUpdatesV1')) ?? '{}') as Map;
+      for (final entry in groups.entries) {
+        try {
+          _followSeries[entry.key as String] = FollowSeriesState.fromJson(
+            Map<String, dynamic>.from(entry.value as Map),
+          );
+        } catch (_) {}
+      }
+    } catch (_) {}
     for (final row in readJsonList(_string(_key('seriesCandidates')))) {
       try {
         final drama = Drama.fromJson(row);
@@ -479,6 +498,17 @@ class LocalStore extends ChangeNotifier {
       values.remove(key);
     }
     values.addAll(changes);
+    if (!replace &&
+        changes.containsKey(_key('favorites')) &&
+        !changes.containsKey(_key('followUpdatesV1'))) {
+      final incoming = readJsonList(
+        changes[_key('favorites')] as String,
+      ).map(Drama.fromJson).where((d) => d.source == 'hongguo').toList();
+      final active = incoming.map(followSeriesKey).toSet();
+      final state = _activeFollowSeries()
+        ..removeWhere((key, value) => !active.contains(key));
+      values[_key('followUpdatesV1')] = _encodeFollowSeries(state);
+    }
     if (trackSync && !replace) {
       _trackLanChanges(
         values,
@@ -612,7 +642,23 @@ class LocalStore extends ChangeNotifier {
       if (!isFavorite(id) || epoch != _epoch) return;
       final states = Map.of(_followStates)
         ..[id] = _followStates[id]!.markRead();
-      await _commit({_key('followStates'): _encodeFollowStates(states)});
+      final updates = _activeFollowSeries();
+      final drama = _favorites[id]!;
+      final key = followSeriesKey(drama);
+      final current = updates[key];
+      if (current != null) {
+        var next = current;
+        for (final event in current.unread.where(
+          (e) => e.drama.id == id && !e.newSeason,
+        )) {
+          next = next.acknowledge(eventId: event.id);
+        }
+        updates[key] = next;
+      }
+      await _commit({
+        _key('followStates'): _encodeFollowStates(states),
+        _key('followUpdatesV1'): _encodeFollowSeries(updates),
+      });
       _loadLibrary();
       _notify();
     });
@@ -626,7 +672,15 @@ class LocalStore extends ChangeNotifier {
       final updated = current.markSeriesSeasonRead(seasonId);
       if (identical(current, updated)) return;
       final states = Map.of(_followStates)..[id] = updated;
-      await _commit({_key('followStates'): _encodeFollowStates(states)});
+      final updates = _activeFollowSeries();
+      final key = followSeriesKey(_favorites[id]!);
+      if (updates[key] != null) {
+        updates[key] = updates[key]!.acknowledge(eventId: 'season:$seasonId');
+      }
+      await _commit({
+        _key('followStates'): _encodeFollowStates(states),
+        _key('followUpdatesV1'): _encodeFollowSeries(updates),
+      });
       _loadLibrary();
       _notify();
     });
@@ -658,12 +712,30 @@ class LocalStore extends ChangeNotifier {
           current.drama,
         );
       }
+      for (final id in states.keys.toList()) {
+        states[id] = states[id]!.markSeriesSeasonRead(current.drama.id);
+        if (id == current.drama.id &&
+            states[id]!.newEpisodes > 0 &&
+            current.position > 0) {
+          states[id] = states[id]!.copyWith(
+            readEpisodes: current.episode.clamp(
+              states[id]!.readEpisodes ?? 0,
+              states[id]!.knownEpisodes,
+            ),
+          );
+        }
+      }
+      final updateStates = _activeFollowSeries();
+      for (final key in updateStates.keys.toList()) {
+        updateStates[key] = updateStates[key]!.acknowledge(watch: current);
+      }
       await _commit({
+        _key('followUpdatesV1'): _encodeFollowSeries(updateStates),
         _key('history'): jsonEncode(
           sorted.take(300).map((entry) => entry.toJson()).toList(),
         ),
+        _key('followStates'): _encodeFollowStates(states),
         if (following != null) ...{
-          _key('followStates'): _encodeFollowStates(states),
           _key('favorites'): jsonEncode(
             favorites.values.map((entry) => entry.toJson()).toList(),
           ),
@@ -850,6 +922,36 @@ class LocalStore extends ChangeNotifier {
               )) {
         changes[_key('seriesCandidates')] = seriesCandidateJson;
       }
+      final followSeries = _activeFollowSeries();
+      final oldFollowSeries = _encodeFollowSeries(followSeries);
+      for (final group in followSubscriptions) {
+        final current = followSeries[group.key]!;
+        final matched = group.match(updates);
+        final bySeason = <int, int>{};
+        for (final drama in matched) {
+          final season = followSeasonNumber(drama);
+          bySeason[season] = (bySeason[season] ?? 0) + 1;
+        }
+        followSeries[group.key] = current.observe(
+          group,
+          matched.where(
+            (d) =>
+                current.known.containsKey(d.id) ||
+                bySeason[followSeasonNumber(d)] == 1,
+          ),
+          DateTime.now(),
+          complete: false,
+          recordAttempt: false,
+          watched: history.values
+              .where((w) => w.position > 0)
+              .map((w) => w.drama.id)
+              .toSet(),
+        );
+      }
+      final followSeriesJson = _encodeFollowSeries(followSeries);
+      if (oldFollowSeries != followSeriesJson) {
+        changes[_key('followUpdatesV1')] = followSeriesJson;
+      }
       if (changes.isEmpty) return;
       await _commit(changes);
       _loadLibrary();
@@ -999,6 +1101,9 @@ class LocalStore extends ChangeNotifier {
             'followStates': jsonDecode(
               _string(_key('followStates', profile.id)) ?? '{}',
             ),
+            'followUpdatesV1': jsonDecode(
+              _string(_key('followUpdatesV1', profile.id)) ?? '{}',
+            ),
             'seriesCandidates': readJsonList(
               _string(_key('seriesCandidates', profile.id)),
             ),
@@ -1064,6 +1169,11 @@ class LocalStore extends ChangeNotifier {
       }
       final states = library['followStates'] as Map? ?? {};
       final seriesCandidates = library['seriesCandidates'] as List? ?? [];
+      final followUpdates = library['followUpdatesV1'] as Map? ?? {};
+      if (followUpdates.length > 20000) throw const FormatException('系列更新记录过多');
+      for (final value in followUpdates.values) {
+        FollowSeriesState.fromJson(Map<String, dynamic>.from(value as Map));
+      }
       final favoriteIds = favorites.map((row) => (row as Map)['id']).toSet();
       _readBackupFollowSync(library);
       if (states.length > 20000 ||
@@ -1133,6 +1243,9 @@ class LocalStore extends ChangeNotifier {
         _key('favorites', profile.id): jsonEncode(library['favorites']),
         _key('followStates', profile.id): jsonEncode(
           library['followStates'] ?? {},
+        ),
+        _key('followUpdatesV1', profile.id): jsonEncode(
+          library['followUpdatesV1'] ?? {},
         ),
         _key('seriesCandidates', profile.id): jsonEncode(
           library['seriesCandidates'] ?? [],

@@ -5,6 +5,7 @@ import 'catalog_sort.dart';
 import 'core_bridge.dart';
 import 'drama_actions.dart';
 import 'follow_state.dart';
+import 'follow_updates.dart';
 import 'local_store.dart';
 import 'models.dart';
 import 'remote_widgets.dart';
@@ -19,6 +20,7 @@ class SavedLibrary extends StatefulWidget {
     required this.onOpen,
     required this.onContinue,
     this.onDownload,
+    this.onOpenUpdates,
   });
 
   final AppRepository repository;
@@ -27,6 +29,7 @@ class SavedLibrary extends StatefulWidget {
   final ValueChanged<Drama> onOpen;
   final ValueChanged<Drama> onContinue;
   final ValueChanged<Drama>? onDownload;
+  final ValueChanged<String?>? onOpenUpdates;
 
   @override
   State<SavedLibrary> createState() => _SavedLibraryState();
@@ -80,16 +83,31 @@ class _SavedLibraryState extends State<SavedLibrary> {
   Widget _tile(Drama drama, {FocusNode? focusNode, VoidCallback? onFocus}) {
     final watched = widget.store.watched(drama.id);
     final state = widget.store.following(drama.id);
-    final badge = state == null
+    final group = drama.source == 'hongguo'
+        ? widget.store.followSubscriptions
+              .where((group) => group.key == followSeriesKey(drama))
+              .firstOrNull
+        : null;
+    final events = group == null
+        ? const <FollowUpdate>[]
+        : widget.store.followSeriesState(group).unread;
+    final badge = events.isNotEmpty
+        ? events.first.label
+        : state == null
         ? null
-        : '${state.label}${state.hasUpdates ? ' · ${state.updateLabel}' : ''}';
+        : '${state.label}${group == null && state.hasUpdates ? ' · ${state.updateLabel}' : ''}';
     return DramaTile(
       key: ValueKey('saved-${drama.id}'),
       drama: drama,
       repository: widget.repository,
       focusNode: focusNode,
       onFocus: onFocus,
-      onTap: () => widget.onOpen(drama),
+      onTap: () =>
+          _filter == 'updates' &&
+              drama.source == 'hongguo' &&
+              widget.onOpenUpdates != null
+          ? widget.onOpenUpdates!(followSeriesKey(drama))
+          : widget.onOpen(drama),
       onMore: () => _actions(drama),
       actions: DramaActionButton(
         drama: drama,
@@ -116,9 +134,17 @@ class _SavedLibraryState extends State<SavedLibrary> {
         return widget.history ||
             _filter.isEmpty ||
             (_filter == 'updates'
-                ? state?.hasUpdates == true
+                ? widget.store.hasFollowUpdates(drama.id)
                 : state?.status.name == _filter);
       }).toList();
+      if (_filter == 'updates' && !widget.history) {
+        final seen = <String>{};
+        items.removeWhere(
+          (drama) => !seen.add(
+            drama.source == 'hongguo' ? followSeriesKey(drama) : drama.id,
+          ),
+        );
+      }
       final ids = items.map((drama) => drama.id).toSet();
       final resume = history
           .where(
@@ -171,6 +197,19 @@ class _SavedLibraryState extends State<SavedLibrary> {
             ),
           ),
         ),
+        if (!widget.history && widget.onOpenUpdates != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: RemoteButton(
+                key: const ValueKey('saved-follow-updates'),
+                label: '追剧更新 · ${widget.store.followUpdateCount} 个系列',
+                icon: Icons.notifications_active_outlined,
+                onPressed: () => widget.onOpenUpdates!(null),
+              ),
+            ),
+          ),
         if (!widget.history)
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
@@ -181,16 +220,25 @@ class _SavedLibraryState extends State<SavedLibrary> {
                   ('', '全部'),
                   for (final status in FollowStatus.values)
                     (status.name, status.label),
-                  ('updates', '有更新'),
+                  ('updates', '有更新 · ${widget.store.followUpdateCount}'),
                 ])
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      key: ValueKey('follow-filter-${filter.$1}'),
-                      label: Text(filter.$2),
-                      selected: _filter == filter.$1,
-                      onSelected: (_) => setState(() => _filter = filter.$1),
-                    ),
+                    child: AppLayout.isTelevision(context)
+                        ? RemoteButton(
+                            key: ValueKey('follow-filter-${filter.$1}'),
+                            label: filter.$2,
+                            selected: _filter == filter.$1,
+                            onPressed: () =>
+                                setState(() => _filter = filter.$1),
+                          )
+                        : ChoiceChip(
+                            key: ValueKey('follow-filter-${filter.$1}'),
+                            label: Text(filter.$2),
+                            selected: _filter == filter.$1,
+                            onSelected: (_) =>
+                                setState(() => _filter = filter.$1),
+                          ),
                   ),
               ],
             ),
